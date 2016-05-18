@@ -1,0 +1,8 @@
+Description:
+    Creates a migration for activerecord_pgcrypto
+
+Example:
+    rails generate pgcrypto_migration 
+
+    This will create:
+        what/will/it/create
