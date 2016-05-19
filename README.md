@@ -8,7 +8,7 @@ Enable transparent encryption / decryption for ActiveRecord using [pgcrypto](htt
 Add this line to your application's Gemfile:
 
 ```ruby
-gem 'activerecord-pgcrypto'
+gem 'activerecord-pgcrypto', require: 'active_record/pgcrypto'
 ```
 
 And then execute:
@@ -27,6 +27,7 @@ If you've got a `Foo` model that you want to add an encrypted `bar` attribute to
   def change
     enable_extension "pgcrypto"
     add_column :foos, :encrypted_bar, :string
+    # you only need the :hashed_ column if you want to make your model searchable
     add_column :foos, :hashed_bar, :string
   end
 ```  
@@ -38,7 +39,7 @@ $ gpg --output your@email.address.pub.gpg --armor --export your@email.address
 $ gpg --output your@email.address.priv.gpg --armor --export-secret-key your@email.address
 ```
 
-3. Create a salt in `postgresql`:
+3. If your attribute needs to be searchable create a salt in `postgresql`:
 
 ```
 $ psql postgres
@@ -62,7 +63,7 @@ ActiveRecord::Pgcrypto.configure do |config|
   # defaults to the value of ENV['PGCRYPTO_PRIVATE_KEY']
   config.private_key = File.read 'path/to/your/private/key'
 
-  # salt - required
+  # salt - required to make a model searchable
   # salt to use for searching, see below for more discussion
   # defaults to ENV['PGCRYPTO_SALT']
 
@@ -92,6 +93,7 @@ end
 => "something secret"
 > foo.encrypted_bar
 => "c1c04c031227ab19d18859520107fc0c01fde099a4efbc73134847e76163a44c5c3d6910a5ff99373a06b451e46eb75345ce0b35ba883959b7b496895f6ea9ed7e41344b9d771c7feabc0e410ba4fa8788185f1a0b2cc778ee01e51a0549624288e7af1a5f4c5602e45600e447449f9ed9c74d7a35b2c5729252d957328e7c4eaa046fcd3c6069d59742edea636cb9a7909736f42faa38485d6ce9bb5791bee4ba3749aec2203ba6c28a21c039d6161c33b54c9451893254a89860fb81706fd7f0f4f521d2c3e54bf0a27666bbcadb2514dd3712de9c07896c7be950bfb5e1a61f3879e1dd5bfea4590e5609b7677d9b6f81fc6d2d7ebdee3c275185e942183d51811d4eb586c29c41835256699e09d27001953979efee6343b0cbdbd500bcdc1070337a3670cbcf45fd0064b5df907a0dd6a19f32521a5281f0a06cf43bf9f3972c3c0c0c7b7511958f3bec6deaa252bfbf9ea4ec1f38396f989fbbe6f91d506450f7828b09e2b077dc264c86919584f3adc14b71cb3cde2897b28123bd09ac32"
+ > # if you added the hashed_ attribute
  > foo.hashed_bar
  => "$2a$06$kE5K8B4EiFQ3CHnSn4Mw9.vJeDt5Auhn4e/pq8rqN"
 ```
@@ -107,10 +109,8 @@ D, [2016-05-19T09:49:41.375135 #20166] DEBUG -- :   encrypt (0.3ms)  SELECT enco
 Any encrypted attributes are also automatically added to `Rails.configuration.filter_parameters` to avoid leaking them in request logs.
 
 ## Searching
-Searching is accomplished with special search methods.
 
-
-Currently the standard ActiveRecord methods don't work so you can't do this:
+In order for search to work you must add the `hashed_*` attribute in your migration. You also need to have a `salt` specified in your configuration. Searching is accomplished with special search methods. Currently the standard ActiveRecord methods don't work so you can't do this:
 ```
 > Foo.where(bar: 'asdfasdf')
 ```

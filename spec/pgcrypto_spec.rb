@@ -7,23 +7,6 @@ RSpec.describe ActiveRecord::Pgcrypto do
              adapter: 'postgresql',
              database: 'activerecord_pgcrypto_test' }
 
-  before(:all) do
-    silence_stream(STDOUT) do
-      ActiveRecord::Base.establish_connection(CONFIG.merge({database: 'postgres'}))
-      ActiveRecord::Base.connection.create_database(CONFIG[:database])
-      ActiveRecord::Base.establish_connection(CONFIG)
-
-      ActiveRecord::Schema.define(version: 1) do
-        enable_extension 'pgcrypto'
-        create_table :messages do |t|
-          t.boolean :flag
-          t.string :encrypted_message
-          t.string :hashed_message
-        end
-      end
-    end
-  end
-
   after(:all) do
     silence_stream(STDOUT) do
       ActiveRecord::Base.establish_connection(CONFIG.merge({database: 'postgres'}))
@@ -49,45 +32,25 @@ RSpec.describe ActiveRecord::Pgcrypto do
     has_encrypted_attributes :message
   end
 
-  describe '#encrypted_attributes' do
-    before(:all) do
-      class AnotherMessage < ActiveRecord::Base
-        self.table_name = 'messages'
-        include ActiveRecord::Pgcrypto
-        has_encrypted_attributes :message
-      end
-    end
 
-    it 'reading works' do
-      expect(AnotherMessage.encrypted_attributes).to eq(['message'])
-    end
+  ENV_VARS = %w{PGCRYPTO_PUBLIC_KEY PGCRYPTO_PRIVATE_KEY PGCRYPTO_PRIVATE_KEY_PASSWORD PGCRYPTO_SALT}.freeze
 
-    it 'writing works' do
-      AnotherMessage.instance_eval do
-        has_encrypted_attributes :something_else
-      end
-
-      expect(AnotherMessage.encrypted_attributes).to eq(['message', 'something_else'])
-
-      AnotherMessage.instance_eval do
-        has_encrypted_attributes :foo, :bar
-      end
-
-      expect(AnotherMessage.encrypted_attributes).to eq(['message', 'something_else', 'foo', 'bar'])
-    end
+  def reset_config_and_env
+    ActiveRecord::Pgcrypto.instance_variable_set :@configuration, nil
+    ENV_VARS.each{|v| ENV.delete v}
   end
 
-  shared_examples 'attribute encryption' do
-    let(:message) { Message.create! }
-    let(:string) { Faker::Lorem.sentence }
-    let(:string2) { Faker::Lorem.sentence }
-    let(:integer) { rand(1000) }
-    let(:integer2) { rand(1000) + 1000 }
-    let(:float) { Math::PI }
-    let(:float2) { Math::E }
-    let(:hash) {{ string: string, integer: integer, float: float }}
-    let(:hash2) {{ string: string2, integer: integer2, float: float2 }}
+  let(:message) { Message.create! }
+  let(:string) { Faker::Lorem.sentence }
+  let(:string2) { Faker::Lorem.sentence }
+  let(:integer) { rand(1000) }
+  let(:integer2) { rand(1000) + 1000 }
+  let(:float) { Math::PI }
+  let(:float2) { Math::E }
+  let(:hash) {{ string: string, integer: integer, float: float }}
+  let(:hash2) {{ string: string2, integer: integer2, float: float2 }}
 
+  shared_examples 'attribute encryption' do
     describe 'getter/setter' do
       it 'works with a string' do
         expect(message.message?).to eq(false)
@@ -150,7 +113,9 @@ RSpec.describe ActiveRecord::Pgcrypto do
       end
 
     end
+  end
 
+  shared_examples 'attribute_encryption_search' do
     describe 'search' do
       it 'works with a string' do
         message.update! message: string
@@ -210,78 +175,191 @@ RSpec.describe ActiveRecord::Pgcrypto do
     end
   end
 
-  ENV_VARS = %w{PGCRYPTO_PUBLIC_KEY PGCRYPTO_PRIVATE_KEY PGCRYPTO_PRIVATE_KEY_PASSWORD PGCRYPTO_SALT}.freeze
+  context "with encrypted_ attribute" do
+    before(:all) do
+      silence_stream(STDOUT) do
+        ActiveRecord::Base.establish_connection(CONFIG.merge({database: 'postgres'}))
+        ActiveRecord::Base.connection.drop_database(CONFIG[:database])
+        ActiveRecord::Base.connection.create_database(CONFIG[:database])
+        ActiveRecord::Base.establish_connection(CONFIG)
 
-  def reset_config_and_env
-    ActiveRecord::Pgcrypto.instance_variable_set :@configuration, nil
-    ENV_VARS.each{|v| ENV.delete v}
-  end
+        ActiveRecord::Schema.define(version: 1) do
+          enable_extension 'pgcrypto'
+          create_table :messages do |t|
+            t.boolean :flag
+            t.string :encrypted_message
+          end
+        end
+      end
+      Message.reset_column_information
+    end
 
-  context 'with a configuration block' do
-    context 'a key with a password' do
-      before(:all) do
-        reset_config_and_env
+    context 'with a configuration block' do
+      context 'a key with a password' do
+        before(:all) do
+          reset_config_and_env
 
-        ActiveRecord::Pgcrypto.configure do |c|
-          c.public_key = PUBLIC_KEY_PASS
-          c.private_key = PRIVATE_KEY_PASS
-          c.private_key_password = PASSWORD
-          c.salt = SALT
+          ActiveRecord::Pgcrypto.configure do |c|
+            c.public_key = PUBLIC_KEY_PASS
+            c.private_key = PRIVATE_KEY_PASS
+            c.private_key_password = PASSWORD
+            c.salt = SALT
+          end
+        end
+
+        it_behaves_like "attribute encryption"
+
+        describe "search" do
+          it 'does not do anything' do
+            expect(Message.find_by_message(message.message)).to be_blank
+          end
         end
       end
 
-      it_behaves_like "attribute encryption"
+      context 'a key without a password' do
+        before(:all) do
+          reset_config_and_env
+
+          ActiveRecord::Pgcrypto.configure do |c|
+            c.public_key = PUBLIC_KEY_NO_PASS
+            c.private_key = PRIVATE_KEY_NO_PASS
+            c.salt = SALT
+          end
+        end
+
+        it_behaves_like "attribute encryption"
+      end
     end
 
-    context 'a key without a password' do
+    context 'without a configuration block' do
       before(:all) do
         reset_config_and_env
+        ENV['PGCRYPTO_PUBLIC_KEY'] = PUBLIC_KEY_PASS
+        ENV['PGCRYPTO_PRIVATE_KEY'] = PRIVATE_KEY_PASS
+        ENV['PGCRYPTO_PRIVATE_KEY_PASSWORD'] = PASSWORD
+        ENV['PGCRYPTO_SALT'] = SALT
+      end
 
-        ActiveRecord::Pgcrypto.configure do |c|
-          c.public_key = PUBLIC_KEY_NO_PASS
-          c.private_key = PRIVATE_KEY_NO_PASS
-          c.salt = SALT
+      it_behaves_like "attribute encryption"
+
+      describe '#configuration' do
+        it 'works' do
+          config = ActiveRecord::Pgcrypto.configuration
+          expect(config.public_key).to eq(PUBLIC_KEY_PASS)
+          expect(config.private_key).to eq(PRIVATE_KEY_PASS)
+          expect(config.private_key_password).to eq(PASSWORD)
+          expect(config.salt).to eq(SALT)
+        end
+      end
+    end
+  end
+
+  context "with encrypted_ and hashed_ attributes" do
+    before(:all) do
+      silence_stream(STDOUT) do
+        ActiveRecord::Base.establish_connection(CONFIG.merge({database: 'postgres'}))
+        ActiveRecord::Base.connection.drop_database(CONFIG[:database])
+        ActiveRecord::Base.connection.create_database(CONFIG[:database])
+        ActiveRecord::Base.establish_connection(CONFIG)
+
+        ActiveRecord::Schema.define(version: 1) do
+          enable_extension 'pgcrypto'
+          create_table :messages do |t|
+            t.boolean :flag
+            t.string :encrypted_message
+            t.string :hashed_message
+          end
+        end
+      end
+      Message.reset_column_information
+    end
+
+    describe '#encrypted_attributes' do
+      before(:all) do
+        class AnotherMessage < ActiveRecord::Base
+          self.table_name = 'messages'
+          include ActiveRecord::Pgcrypto
+          has_encrypted_attributes :message
         end
       end
 
+      it 'reading works' do
+        expect(AnotherMessage.encrypted_attributes).to eq(['message'])
+      end
+
+      it 'writing works' do
+        AnotherMessage.instance_eval do
+          has_encrypted_attributes :something_else
+        end
+
+        expect(AnotherMessage.encrypted_attributes).to eq(['message', 'something_else'])
+
+        AnotherMessage.instance_eval do
+          has_encrypted_attributes :foo, :bar
+        end
+
+        expect(AnotherMessage.encrypted_attributes).to eq(['message', 'something_else', 'foo', 'bar'])
+      end
+    end
+
+
+
+
+    context 'with a configuration block' do
+      context 'a key with a password' do
+        before(:all) do
+          reset_config_and_env
+
+          ActiveRecord::Pgcrypto.configure do |c|
+            c.public_key = PUBLIC_KEY_PASS
+            c.private_key = PRIVATE_KEY_PASS
+            c.private_key_password = PASSWORD
+            c.salt = SALT
+          end
+        end
+
+        it_behaves_like "attribute encryption"
+        it_behaves_like "attribute_encryption_search"
+      end
+
+      context 'a key without a password' do
+        before(:all) do
+          reset_config_and_env
+
+          ActiveRecord::Pgcrypto.configure do |c|
+            c.public_key = PUBLIC_KEY_NO_PASS
+            c.private_key = PRIVATE_KEY_NO_PASS
+            c.salt = SALT
+          end
+        end
+
+        it_behaves_like "attribute encryption"
+        it_behaves_like "attribute_encryption_search"
+      end
+    end
+
+    context 'without a configuration block' do
+      before(:all) do
+        reset_config_and_env
+        ENV['PGCRYPTO_PUBLIC_KEY'] = PUBLIC_KEY_PASS
+        ENV['PGCRYPTO_PRIVATE_KEY'] = PRIVATE_KEY_PASS
+        ENV['PGCRYPTO_PRIVATE_KEY_PASSWORD'] = PASSWORD
+        ENV['PGCRYPTO_SALT'] = SALT
+      end
+
       it_behaves_like "attribute encryption"
-    end
-  end
+      it_behaves_like "attribute_encryption_search"
 
-  context 'without a configuration block' do
-    before(:all) do
-      reset_config_and_env
-      ENV['PGCRYPTO_PUBLIC_KEY'] = PUBLIC_KEY_PASS
-      ENV['PGCRYPTO_PRIVATE_KEY'] = PRIVATE_KEY_PASS
-      ENV['PGCRYPTO_PRIVATE_KEY_PASSWORD'] = PASSWORD
-      ENV['PGCRYPTO_SALT'] = SALT
-    end
-
-    it_behaves_like "attribute encryption"
-
-    describe '#configuration' do
-      it 'works' do
-        config = ActiveRecord::Pgcrypto.configuration
-        expect(config.public_key).to eq(PUBLIC_KEY_PASS)
-        expect(config.private_key).to eq(PRIVATE_KEY_PASS)
-        expect(config.private_key_password).to eq(PASSWORD)
-        expect(config.salt).to eq(SALT)
+      describe '#configuration' do
+        it 'works' do
+          config = ActiveRecord::Pgcrypto.configuration
+          expect(config.public_key).to eq(PUBLIC_KEY_PASS)
+          expect(config.private_key).to eq(PRIVATE_KEY_PASS)
+          expect(config.private_key_password).to eq(PASSWORD)
+          expect(config.salt).to eq(SALT)
+        end
       end
     end
-  end
-
-  context 'without a salt' do
-    before(:all) do
-      reset_config_and_env
-      ActiveRecord::Pgcrypto.configure do |c|
-        c.public_key = PUBLIC_KEY_PASS
-        c.private_key = PRIVATE_KEY_PASS
-        c.private_key_password = PASSWORD
-      end
-    end
-
-
-    it_behaves_like "attribute encryption"
 
   end
 end

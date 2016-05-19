@@ -96,13 +96,7 @@ module ActiveRecord
     BF_ITERATION_COUNT = 6
 
     def crypt(value)
-      opts = [bind_param(value)]
-      if salt
-        opts << bind_param(salt)
-      else
-        opts << Arel::Nodes::NamedFunction.new('gen_salt', [Arel::Nodes::Quoted.new('bf'), BF_ITERATION_COUNT])
-      end
-      Arel::Nodes::NamedFunction.new 'crypt', opts
+      Arel::Nodes::NamedFunction.new 'crypt', [bind_param(value), bind_param(salt)]
     end
 
     def public_key
@@ -237,12 +231,14 @@ module ActiveRecord
               return value
             end
 
-            digest_value = digest(value)
+            if attribute_method? hashed_attr
+              # set our hashed value only if we have it in the db
+              self.send "#{hashed_attr}=".to_sym, digest(value)
+            end
 
             # call our activerecord setter with our encrypted value
             self.send "#{encrypted_attr}=".to_sym, pgp_encrypt(value)
-            # then set our hashed value as well
-            self.send "#{hashed_attr}=".to_sym, digest_value
+
           end
 
           define_method "#{a}?" do
@@ -269,6 +265,7 @@ module ActiveRecord
           #
           # TODO: rewrite this using ActiveRecord::QueryMethods / ActiveRecord::PredicateBuilder
           scope "find_by_#{a}".to_sym, ->(val) {
+            return none unless attribute_method? hashed_attr
             if val.nil?
               # if nil was explicitly passed in we search for a NULL value
               where self.arel_table["hashed_#{a}".to_sym].eq(nil)
@@ -283,14 +280,8 @@ module ActiveRecord
               #
               # the .tap is necessary below to add bind params into our arel generated
               # query. ugly!
-              crypt_opts = [Arel::Nodes::BindParam.new]
-              bind_values = [[nil, val]]
-              if ActiveRecord::Pgcrypto.configuration.salt
-                crypt_opts << Arel::Nodes::BindParam.new
-                bind_values << [nil, ActiveRecord::Pgcrypto.configuration.salt ]
-              else
-                crypt_opts << self.arel_table["hashed_#{a}".to_sym]
-              end
+              crypt_opts = [Arel::Nodes::BindParam.new, Arel::Nodes::BindParam.new]
+              bind_values = [[nil, val], [nil, ActiveRecord::Pgcrypto.configuration.salt]]
 
               where(self.arel_table["hashed_#{a}".to_sym]
                       .eq(Arel::Nodes::NamedFunction.new('crypt', crypt_opts))
